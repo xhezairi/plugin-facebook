@@ -42,22 +42,26 @@
             parent::__construct();
             $this->setTableName( 't_facebook_connect' );
             $this->setPrimaryKey( 'fk_i_user_id' );
-            $this->setFields( array( 'fk_i_user_id', 'i_facebook_uid' ) );
+            $this->setFields( [ 'fk_i_user_id', 'i_facebook_uid' ] );
 
 
-            self::$facebook = new Facebook(array(
+            self::$facebook = new Facebook([
                 'appId'  => osc_get_preference('fbc_appId', 'facebook_connect'),
-                'secret' => osc_get_preference('fbc_secret', 'facebook_connect')
-            ));
-
+                'secret' => osc_get_preference('fbc_secret', 'facebook_connect'),
+                'allowSignedRequest' => false,
+            ]);
         }
 
-        public function init() {
-
+        public function init()
+        {
             self::$user = $this->getUser();
+            self::$logoutUrl = self::$facebook->getLogoutUrl();
 
             if( !osc_is_web_user_logged_in() ) {
-                self::$loginUrl  = self::$facebook->getLoginUrl( array('scope' => 'email'));
+                self::$loginUrl = self::$facebook->getLoginUrl([
+                    'redirect_uri' => osc_base_url(),
+                    'scope' => [ 'email' ],
+                ]);
             }
 
             if ( !self::$user ) {
@@ -65,9 +69,6 @@
             }
 
             try {
-
-                self::$user_profile = self::$facebook->api( '/me?fields=id,name,email' );
-
                 $this->dao->select( $this->getFields() );
                 $this->dao->from( $this->getTableName() );
                 $this->dao->where( 'i_facebook_uid', self::$user );
@@ -75,6 +76,7 @@
 
                 if( ( $rs !== false ) && ( $rs->numRows() === 1 ) ) {
                     $fbUser = $rs->row();
+
                     if( count($fbUser) > 0 ) {
                         require_once osc_lib_path() . 'osclass/UserActions.php';
                         $uActions = new UserActions( false );
@@ -92,43 +94,20 @@
                     }
                 }
 
-                if(is_null(self::$user_profile)) {
-                    if (isset($_SERVER['HTTP_COOKIE'])) {
-                        $cookies = explode(';', $_SERVER['HTTP_COOKIE']);
-                        foreach ($cookies as $cookie) {
-                            $parts = explode('=', $cookie);
-                            $name = trim($parts[0]);
-                            setcookie($name, '', time() - 1000);
-                            setcookie($name, '', time() - 1000, '/');
-                        }
-                    }
+                self::$user_profile = self::$facebook->api('/me?fields=name,email'); //,picture.width(400)
 
-                    osc_add_flash_error_message(__('Some error occured trying to connect with Facebook.', 'facebook'));
-                    header( 'Location: ' . osc_register_account_url()  );
-                    exit();
-                } else{
-                    if( !isset(self::$user_profile['email']) ) {
+                if ( !isset( self::$user_profile['email'] ) ) {
+                    osc_add_flash_error_message( __('Some error occured trying to connect with Facebook.', 'facebook') );
 
-                        if (isset($_SERVER['HTTP_COOKIE'])) {
-                            $cookies = explode(';', $_SERVER['HTTP_COOKIE']);
-                            foreach ($cookies as $cookie) {
-                                $parts = explode('=', $cookie);
-                                $name = trim($parts[0]);
-                                setcookie($name, '', time() - 1000);
-                                setcookie($name, '', time() - 1000, '/');
-                            }
-                        }
-
-                        osc_add_flash_error_message(__('Some error occured trying to connect with Facebook.', 'facebook'));
-                        header( 'Location: ' . osc_register_account_url() );
-                        exit();
-                    }
+                    self::$instance->resetCookies();
+                    return self::$facebook;
                 }
 
                 $manager = User::newInstance();
                 $oscUser = $manager->findByEmail( self::$user_profile['email'] );
+
                 // exists on our DB, we merge both accounts
-                if( count($oscUser) > 0 ) {
+                if ( count($oscUser) > 0 ) {
                     require_once osc_lib_path() . 'osclass/UserActions.php';
                     $uActions = new UserActions( false );
 
@@ -139,19 +118,26 @@
                     osc_add_flash_ok_message( __( "You already have an user with this e-mail address. We've merged your accounts", 'facebook' ) );
 
                     // activate user in case is not activated
-                    $manager->update( array('b_active' => '1')
-                                     ,array('pk_i_id' => $oscUser['pk_i_id']) );
+                    if ( empty( $oscUser['b_active'] ) ) {
+                        $manager->update(
+                            [ 'b_active' => '1' ],
+                            [ 'pk_i_id' => $oscUser['pk_i_id'] ]
+                        );
+                    }
+
                     $logged = $uActions->bootstrap_login( $oscUser['pk_i_id'] );
                 } else {
-                    // Auto-register him
+                    // Auto-Register
                     $this->register_user( self::$user_profile );
                 }
 
                 // redirect to log in
-                header( 'Location: ' . osc_base_url() );
-                exit;
+                // header( 'Location: /' );
+                // exit;
+                return true;
             } catch (FacebookApiException $e) {
                 self::$user = null;
+                error_log($e->getMessage());
             }
 
             return self::$facebook;
@@ -163,7 +149,7 @@
             $sql  = file_get_contents( $path );
 
             if( !$this->dao->importSQL( $sql ) ) {
-                throw new Exception( __('Error importing the database structure of the jobboard plugin', 'jobboard') );
+                throw new Exception( __('Error importing the database structure of the Facebook Connect plugin', 'facebook_connect') );
             }
         }
 
@@ -260,6 +246,4 @@
             self::$facebook->destroySession();
         }
     }
-
     /* file end: ./oc-content/plugins/facebook/OSCFacebook.php */
-?>
